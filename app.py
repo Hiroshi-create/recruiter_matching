@@ -11,7 +11,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import japanize_matplotlib  # 日本語表示のためにインポート
+import matplotlib_fontja  # 日本語表示のためにインポート
 from matplotlib.backends.backend_pdf import PdfPages
 import io
 import os
