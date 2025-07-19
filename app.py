@@ -1,12 +1,3 @@
-
-"""
-
-pip install openpyxl
-
-"""
-
-
-
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -15,6 +6,9 @@ import matplotlib_fontja  # 日本語表示のためにインポート
 from matplotlib.backends.backend_pdf import PdfPages
 import io
 import os
+
+# openpyxlのインストール（styler.to_excelに必要）
+# pip install openpyxl
 
 # japanize_matplotlibが提供するフォントを設定し、グラフの日本語文字化けを解消
 try:
@@ -42,7 +36,6 @@ def load_priority_attributes(weights_path):
         weights_full_path = os.path.join(base_dir, weights_path)
         
         df_weights = pd.read_csv(weights_full_path)
-        # '重み' 列の大きい順にソートし、'属性' 列をリストとして取得
         sorted_attrs = df_weights.sort_values('重み', ascending=False)['属性'].tolist()
         return df_weights, sorted_attrs, None
     except FileNotFoundError:
@@ -50,18 +43,16 @@ def load_priority_attributes(weights_path):
     except Exception as e:
         return None, [], f"重みファイルの読み込み中にエラーが発生しました: {e}"
 
-# --- 選択に応じた設定と、重みファイルに基づく優先度リストの定義 (動的読み込み) ---
+# --- 選択に応じた設定と、重みファイルに基づく優先度リストの定義 ---
 if partner_type_selection == "リクルーター":
     results_file = "output_results/matching_results_recruiters.csv"
     weights_file = "output_results/optimized_weights_recruiters.csv"
-else: # 現場社員
+else:  # 現場社員
     results_file = "output_results/matching_results_employees.csv"
     weights_file = "output_results/optimized_weights_employees.csv"
 
-# 重みファイルから優先度リストと重みデータを動的に読み込み
 df_weights, priority_attributes, error_message_weights = load_priority_attributes(weights_file)
 
-# 重みファイルの読み込みでエラーが発生した場合は、メッセージを表示して処理を停止
 if error_message_weights:
     st.error(f"エラー: {error_message_weights}")
     st.stop()
@@ -69,31 +60,35 @@ if error_message_weights:
 st.header(f"学生 対 {partner_type_selection} マッチング分析")
 st.write(f"最適化計算によって得られた学生と{partner_type_selection}のマッチング結果を分析・可視化します。")
 
-# --- データ読み込み ---
+
+# --- データ読み込み（修正箇所） ---
 @st.cache_data
-def load_data(results_path):
-    # Streamlit Cloud等で実行する場合、カレントディレクトリの確認が重要
-    # ここではローカル実行を想定し、スクリプトからの相対パスで解決
+def load_data(results_path, partner_type):
+    """結果ファイルを読み込み、マッチング結果、パートナーソース、学生ソースのDataFrameを返す"""
     base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
     results_full_path = os.path.join(base_dir, results_path)
     
     try:
         df_res = pd.read_csv(results_full_path)
         
-        # --- 代替ソースデータ生成 ---
-        partner_prefix = f"{partner_type_selection}_"
-        source_cols = {col: col.replace(partner_prefix, '') for col in df_res.columns if col.startswith(partner_prefix)}
-        df_src = df_res[list(source_cols.keys())].rename(columns=source_cols).drop_duplicates()
-        # --- 代替処理ここまで ---
+        # パートナーの全候補者リストを作成
+        partner_prefix = f"{partner_type}_"
+        partner_cols = {col: col.replace(partner_prefix, '') for col in df_res.columns if col.startswith(partner_prefix)}
+        df_src_partners = df_res[list(partner_cols.keys())].rename(columns=partner_cols).drop_duplicates().reset_index(drop=True)
 
-        return df_res, df_src, None
+        # 学生の全候補者リストを作成
+        student_prefix = "学生_"
+        student_cols = {col: col.replace(student_prefix, '') for col in df_res.columns if col.startswith(student_prefix)}
+        df_src_students = df_res[list(student_cols.keys())].rename(columns=student_cols).drop_duplicates().reset_index(drop=True)
+
+        return df_res, df_src_partners, df_src_students, None
     except FileNotFoundError:
-        return None, None, f"結果ファイルが見つかりません: {results_full_path}。 スクリプトと同じ階層に`output_results`フォルダを配置してください。"
+        return None, None, None, f"結果ファイルが見つかりません: {results_full_path}。 スクリプトと同じ階層に`output_results`フォルダを配置してください。"
     except Exception as e:
-        return None, None, f"ファイルの読み込み中にエラーが発生しました: {e}"
+        return None, None, None, f"ファイルの読み込み中にエラーが発生しました: {e}"
 
-# --- データをロード ---
-df, df_source_partners, error_message = load_data(results_file)
+# --- データをロード（修正箇所） ---
+df, df_source_partners, df_source_students, error_message = load_data(results_file, partner_type_selection)
 
 if error_message:
     st.error(f"エラー: {error_message}")
@@ -112,131 +107,137 @@ if 'ペナルティ' in df.columns:
         except ValueError:
             pass
 
-# マッチング項目が一致する/マッチング不可のセルをハイライトする関数
-def highlight_matches(row, df_partners_source, partner_type):
+# --- マッチング項目をハイライトする関数（修正箇所） ---
+def highlight_matches(row, df_partners_source, df_students_source, partner_type):
+    """
+    行を受け取り、スタイルを返す関数。
+    - 一致する属性を緑色にハイライト
+    - 相手方の候補リストに存在しない属性値を赤色にハイライト
+    """
     styles = [''] * len(row)
     highlight_style = 'background-color: #28a745; color: white;'
     impossible_style = 'background-color: #dc3545; color: white;'
 
-    attributes_to_check = [
-        '大学名称', '学部名称', '学科名称', '文理区分',
-        '応募者区分', '性別', '性格タイプ', '地域'
-    ]
+    attributes_to_check = ['大学名称', '学部名称', '学科名称', '文理区分', '応募者区分', '性別', '性格タイプ', '地域']
 
     for attr in attributes_to_check:
         s_col = f'学生_{attr}'
         p_col = f'{partner_type}_{attr}'
-        p_src_col = attr
+        src_col = attr  # '大学名称'などの基本属性名
 
-        if s_col not in row.index:
+        if s_col not in row.index or p_col not in row.index:
             continue
 
         s_col_idx = row.index.get_loc(s_col)
+        p_col_idx = row.index.get_loc(p_col)
         student_value = row[s_col]
+        partner_value = row[p_col]
 
-        is_impossible = False
-        if p_src_col not in df_partners_source.columns or pd.isna(student_value):
-            is_impossible = True
-        else:
-            possible_values = df_partners_source[p_src_col].dropna().unique()
-            if student_value not in possible_values:
-                is_impossible = True
+        is_student_impossible = False
+        is_partner_impossible = False
 
-        if is_impossible:
+        # Check 1: 学生の属性値が、全担当者候補に存在しないか
+        if src_col in df_partners_source.columns and pd.notna(student_value):
+            if student_value not in df_partners_source[src_col].dropna().unique():
+                is_student_impossible = True
+        
+        # Check 2: 担当者の属性値が、全学生候補に存在しないか
+        if src_col in df_students_source.columns and pd.notna(partner_value):
+            if partner_value not in df_students_source[src_col].dropna().unique():
+                is_partner_impossible = True
+
+        # スタイル適用
+        if pd.notna(student_value) and student_value == partner_value:
+            if not is_student_impossible and not is_partner_impossible:
+                styles[s_col_idx] = highlight_style
+                styles[p_col_idx] = highlight_style
+
+        if is_student_impossible:
             styles[s_col_idx] = impossible_style
-            if p_col in row.index:
-                p_col_idx = row.index.get_loc(p_col)
-                styles[p_col_idx] = impossible_style
-            continue
+        
+        if is_partner_impossible:
+            styles[p_col_idx] = impossible_style
 
-        if p_col in row.index and student_value == row[p_col]:
-            p_col_idx = row.index.get_loc(p_col)
-            styles[s_col_idx] = highlight_style
-            styles[p_col_idx] = highlight_style
-
+    # リクルーターの「所属」に関する特別処理
     if partner_type == 'リクルーター':
         s_faculty_col, p_dept_col = '学生_学部名称', 'リクルーター_所属'
         if s_faculty_col in row.index and p_dept_col in row.index:
-            student_value = row[s_faculty_col]
-            if pd.notna(student_value) and pd.notna(row[p_dept_col]) and student_value in str(row[p_dept_col]):
+            if pd.notna(row[s_faculty_col]) and pd.notna(row[p_dept_col]) and str(row[s_faculty_col]) in str(row[p_dept_col]):
                 s_fac_idx = row.index.get_loc(s_faculty_col)
-                if styles[s_fac_idx] != impossible_style:
-                    p_dep_idx = row.index.get_loc(p_dept_col)
+                p_dep_idx = row.index.get_loc(p_dept_col)
+                if styles[s_fac_idx] != impossible_style and styles[p_dep_idx] != impossible_style:
                     styles[s_fac_idx] = highlight_style
                     styles[p_dep_idx] = highlight_style
-
     return styles
+
 
 st.subheader(f"属性別の重みと一致率 ({partner_type_selection})")
 
-# 優先度順に一致率を計算
 ordered_match_info = {}
 display_order = [f"{attr}一致率" for attr in priority_attributes]
 
 for key in display_order:
     rate = 0.0
-    if key == '所属一致率':
+    if key == '所属一致率' and partner_type_selection == 'リクルーター':
         s_col, p_col = '学生_学部名称', 'リクルーター_所属'
         if s_col in df.columns and p_col in df.columns:
-            rate = (df[s_col].astype(str) == df[p_col].astype(str)).mean()
+            rate = df.apply(lambda row: pd.notna(row[s_col]) and pd.notna(row[p_col]) and row[s_col] in row[p_col], axis=1).mean()
     else:
         attribute_name = key.replace('一致率', '')
         s_col = f'学生_{attribute_name}'
         p_col = f'{partner_type_selection}_{attribute_name}'
         if s_col in df.columns and p_col in df.columns:
             valid_rows = df[[s_col, p_col]].dropna()
-            if not valid_rows.empty:
-                rate = (valid_rows[s_col] == valid_rows[p_col]).mean()
-            else:
-                rate = 0.0
+            rate = 0.0 if valid_rows.empty else (valid_rows[s_col] == valid_rows[p_col]).mean()
     ordered_match_info[key] = rate
 
-# 結合テーブルの作成と表示
 if df_weights is not None:
     df_w = df_weights.sort_values('重み', ascending=False).set_index('属性')
     if ordered_match_info:
         match_df = pd.DataFrame.from_dict(ordered_match_info, orient='index', columns=['一致率'])
         match_df.index = match_df.index.str.replace('一致率', '')
         merged_df = df_w.join(match_df, how='left')
-        
         st.write("各属性の重みと、実際のマッチング結果における一致率を可視化しています。")
         st.dataframe(
-            merged_df.style
-            .format({"重み": "{:.3f}", "一致率": "{:.1%}"})
+            merged_df.style.format({"重み": "{:.3f}", "一致率": "{:.1%}"})
             .bar(subset=["重み"], color='#FFA07A')
             .bar(subset=["一致率"], color='#90EE90'),
             use_container_width=True
         )
     else:
-        st.warning("一致率データが見つかりませんでした。重みのみ表示します。")
+        st.warning("一致率データが見つかりませんでした。")
         st.table(df_w)
 else:
     st.warning("重みデータが見つかりませんでした。")
 
 st.subheader("マッチング結果データ")
 
-# ▼▼▼ 修正・追加箇所（ここから） ▼▼▼
+# --- 凡例とテーブル表示（修正箇所） ---
+st.markdown("""
+**凡例**
+- <span style="color:white; background-color:#28a745; padding: 2px 6px; border-radius: 4px;">緑色セル</span>: 学生と担当者の属性が一致している項目
+- <span style="color:white; background-color:#dc3545; padding: 2px 6px; border-radius: 4px;">赤色セル</span>: 学生または担当者の属性が、相手方の全候補者リストに存在しないためマッチング不可能な項目
+""", unsafe_allow_html=True)
+st.write("")
 
-# スタイルを適用したStylerオブジェクトを生成
-styled_df = df.style.apply(highlight_matches, axis=1, df_partners_source=df_source_partners, partner_type=partner_type_selection)
+styled_df = df.style.apply(
+    highlight_matches,
+    axis=1,
+    df_partners_source=df_source_partners,
+    df_students_source=df_source_students,
+    partner_type=partner_type_selection
+)
 
-# Streamlit上にテーブルを表示
 st.dataframe(styled_df)
 
-# --- Excelエクスポート機能 ---
 @st.cache_data
 def to_excel_with_style(_df_styled):
-    """StylerオブジェクトをExcelファイル（バイナリ形式）に変換する"""
     output = io.BytesIO()
-    # openpyxlエンジンを使い、スタイルを維持したままExcelファイルを作成
     _df_styled.to_excel(output, engine='openpyxl', index=False)
-    processed_data = output.getvalue()
-    return processed_data
+    return output.getvalue()
 
-# Excelデータに変換（キャッシュを利用して高速化）
 excel_data = to_excel_with_style(styled_df)
 
-# ダウンロードボタンを配置
 st.download_button(
     label="📊 マッチング結果をExcelでダウンロード",
     data=excel_data,
@@ -244,8 +245,6 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     help="ハイライトされたセルを含むマッチング結果データをExcelファイルでダウンロードします。"
 )
-
-# ▲▲▲ 修正・追加箇所（ここまで） ▲▲▲
 
 # --- PDF作成とグラフ描画 ---
 pdf_buffer = io.BytesIO()
@@ -288,11 +287,11 @@ with PdfPages(pdf_buffer, metadata={'Title': f'Matching Report ({partner_type_se
     st.divider()
 
     st.subheader(f"{partner_type_selection}ごとの担当学生数（負荷状況）")
-    partner_id_col_results = f"{partner_type_selection}_社員番号"
+    partner_id_col = f"{partner_type_selection}_社員番号"
     source_id_col = "社員番号"
-    if partner_id_col_results in df.columns and source_id_col in df_source_partners.columns:
+    if partner_id_col in df.columns and source_id_col in df_source_partners.columns:
         all_partner_ids = df_source_partners[source_id_col].sort_values().unique()
-        workload = df[partner_id_col_results].value_counts().reindex(all_partner_ids, fill_value=0)
+        workload = df[partner_id_col].value_counts().reindex(all_partner_ids, fill_value=0)
 
         fig3, ax3 = plt.subplots(figsize=(max(10, len(all_partner_ids) * 0.4), 6))
         sns.barplot(x=workload.index, y=workload.values, ax=ax3, palette="viridis")
