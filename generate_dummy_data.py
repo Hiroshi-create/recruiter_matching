@@ -10,9 +10,11 @@ Step 1: ダミーデータ生成 (改訂版)
 - リクルーターデータ: 社員情報、学歴、勤務地、所属など
 
 [主な変更点]
-- 生成する社員・リクルーターの人数に基づき、使用する大学を動的に選定します。
-- 全てのダミーデータ（学生、社員、リクルーター）は、その選定された大学リストのみを使用して生成されます。
-- 社員とリクルーターには、選定された大学が網羅的に割り当てられます。
+- **実行のたびにランダムな結果が得られるように、乱数シードの固定を解除しました。**
+  (結果を固定したい場合は、`MatchingDataGenerator(seed=任意の値)`でシードを指定してください)
+- 「関西学院大学」が必ず選定リストに含まれるロジックは維持しています。
+- 生成する社員・リクルーターの人数に基づき、使用する「大学と学部のペア」を動的に選定します。
+- 全てのダミーデータは、その選定されたペアのみを使用して生成されます。
 
 必要なライブラリ:
 pip install pandas numpy
@@ -21,7 +23,7 @@ pip install pandas numpy
 import pandas as pd
 import numpy as np
 import random
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import os
 import data_definitions as const
 
@@ -30,17 +32,20 @@ class MatchingDataGenerator:
     学生、現場代表社員、リクルーターのダミーデータを新しいスキーマで生成するクラス
     """
 
-    def __init__(self, seed: int = 42, output_folder: str = "matching_data"):
+    def __init__(self, seed: Optional[int] = None, output_folder: str = "matching_data"):
         """
         初期化
 
         Args:
-            seed: ランダムシードの設定
+            seed: ランダムシードの設定。Noneの場合、実行のたびに結果が変わります。
             output_folder: 出力先フォルダ名
         """
         self.seed = seed
-        np.random.seed(seed)
-        random.seed(seed)
+        # seedが指定されている場合のみ乱数を固定する
+        if seed is not None:
+            np.random.seed(seed)
+            random.seed(seed)
+            
         self.output_folder = output_folder
         if not os.path.exists(self.output_folder):
             os.makedirs(self.output_folder)
@@ -58,8 +63,8 @@ class MatchingDataGenerator:
         self._work_locations = const.WORK_LOCATIONS
         self._corporate_departments = const.CORPORATE_DEPARTMENTS
         
-        # --- 今回の生成で使用する大学のリスト ---
-        self._selected_universities: List[str] = []
+        # --- 今回の生成で使用する大学と学部のペアリスト ---
+        self._selected_uni_faculty_pairs: List[Dict[str, str]] = []
 
     def _generate_kana_name(self, gender: str) -> str:
         surname = random.choice(self._surnames)
@@ -69,44 +74,23 @@ class MatchingDataGenerator:
             given_name = random.choice(self._female_names)
         return f"{surname}　{given_name}"
 
-    def _generate_education_info(self, university: str) -> Dict[str, str]:
+    def _generate_education_info(self, university: str, division: str, faculty: str) -> Dict[str, str]:
         """
-        指定された大学名に基づいて学歴情報を生成する。所在地情報も追加で返す。
+        指定された大学・文理区分・学部名に基づいて学歴情報を生成する。
         
         Args:
             university: 使用する大学名
+            division: 使用する文理区分
+            faculty: 使用する学部名
 
         Returns:
             学歴情報を含む辞書
         """
-        uni = university
-        
-        # 有効な学部を持つ大学・文理区分が見つかるまでループ
-        while True:
-            # その大学に存在する、空ではない学部リストを持つ文理区分のリストを作成
-            valid_divisions = [
-                division for division, faculties in self._university_map[uni].items() if faculties
-            ]
-            
-            # 有効な文理区分が存在する場合のみループを抜ける
-            if valid_divisions:
-                break
-            else:
-                # 万が一、指定された大学に有効な学部情報がない場合、別の大学で試す
-                print(f"警告: 大学 '{uni}' に有効な学部情報がありません。別の大学をランダムに選択します。")
-                uni = random.choice(list(self._university_map.keys()))
-
-        # 確定した大学・文理区分から学部・学科を選択
-        division = random.choice(valid_divisions)
-        faculty_dict = self._university_map[uni][division]
-        faculty = random.choice(list(faculty_dict.keys()))
-        department = random.choice(faculty_dict[faculty])
-        
-        # 確定した大学名から所在地を取得
-        location = self._university_location_map.get(uni, random.choice(self._work_locations))
+        department = random.choice(self._university_map[university][division][faculty])
+        location = self._university_location_map.get(university, random.choice(self._work_locations))
         
         return {
-            '大学名称': uni,
+            '大学名称': university,
             '文理区分': division,
             '学部名称': faculty,
             '学科名称': department,
@@ -115,11 +99,19 @@ class MatchingDataGenerator:
 
     def generate_students(self, num_students: int = 500) -> pd.DataFrame:
         students = []
+        if not self._selected_uni_faculty_pairs:
+            print("警告: 学生データ生成に使用できる大学・学部ペアがありません。空のDataFrameを返します。")
+            return pd.DataFrame()
+            
         for i in range(num_students):
             gender = random.choice(self._genders)
-            # 選定された大学リストからランダムに大学を選択
-            uni_name = random.choice(self._selected_universities)
-            education_info = self._generate_education_info(uni_name)
+            
+            selected_pair = random.choice(self._selected_uni_faculty_pairs)
+            education_info = self._generate_education_info(
+                selected_pair['university'],
+                selected_pair['division'],
+                selected_pair['faculty']
+            )
             
             student_record = {
                 '応募者コード': f'X{10000000 + i}',
@@ -141,16 +133,22 @@ class MatchingDataGenerator:
 
     def generate_employees(self, num_employees: int = 40) -> pd.DataFrame:
         employees = []
-        # 選定された大学リストをシャッフルし、割り当て準備
-        universities_to_assign = self._selected_universities.copy()
-        random.shuffle(universities_to_assign)
+        if not self._selected_uni_faculty_pairs:
+            print("警告: 社員データ生成に使用できる大学・学部ペアがありません。空のDataFrameを返します。")
+            return pd.DataFrame()
+
+        pairs_to_assign = self._selected_uni_faculty_pairs.copy()
+        random.shuffle(pairs_to_assign)
 
         for i in range(num_employees):
             gender = random.choice(self._genders)
             
-            # 選定大学を循環的に割り当て、すべての大学が使われるようにする
-            uni_name = universities_to_assign[i % len(universities_to_assign)]
-            education_info = self._generate_education_info(uni_name)
+            selected_pair = pairs_to_assign[i % len(pairs_to_assign)]
+            education_info = self._generate_education_info(
+                selected_pair['university'],
+                selected_pair['division'],
+                selected_pair['faculty']
+            )
 
             employee_record = {
                 '社員番号': 1234500 + i,
@@ -171,16 +169,22 @@ class MatchingDataGenerator:
 
     def generate_recruiters(self, num_recruiters: int = 40) -> pd.DataFrame:
         recruiters = []
-        # 選定された大学リストをシャッフルし、割り当て準備
-        universities_to_assign = self._selected_universities.copy()
-        random.shuffle(universities_to_assign)
+        if not self._selected_uni_faculty_pairs:
+            print("警告: リクルーターデータ生成に使用できる大学・学部ペアがありません。空のDataFrameを返します。")
+            return pd.DataFrame()
+            
+        pairs_to_assign = self._selected_uni_faculty_pairs.copy()
+        random.shuffle(pairs_to_assign)
 
         for i in range(num_recruiters):
             gender = random.choice(self._genders)
 
-            # 選定大学を循環的に割り当て、すべての大学が使われるようにする
-            uni_name = universities_to_assign[i % len(universities_to_assign)]
-            education_info = self._generate_education_info(uni_name)
+            selected_pair = pairs_to_assign[i % len(pairs_to_assign)]
+            education_info = self._generate_education_info(
+                selected_pair['university'],
+                selected_pair['division'],
+                selected_pair['faculty']
+            )
 
             recruiter_record = {
                 '社員番号': 7654300 + i,
@@ -202,28 +206,47 @@ class MatchingDataGenerator:
     def generate_all_data(self, num_students: int, num_employees: int, num_recruiters: int) -> Dict[str, pd.DataFrame]:
         """
         全てのダミーデータを生成する。
-        生成前に、使用する大学のリストを選定する。
+        生成前に、使用する「大学と学部のペア」リストを選定する（関西学院大学を優先）。
         """
-        # --- Step 1: 使用する大学を選定 ---
-        num_universities_to_select = min(num_employees, num_recruiters)
-        all_universities = list(self._university_map.keys())
-        
-        if num_universities_to_select > len(all_universities):
-            print(f"警告: 選択する大学数({num_universities_to_select})が定義済みの大学総数({len(all_universities)})を超えています。")
-            print("利用可能な全ての大学を使用します。")
-            self._selected_universities = all_universities
-        else:
-            self._selected_universities = random.sample(all_universities, k=num_universities_to_select)
+        target_university = "関西学院大学"
+        self._selected_uni_faculty_pairs = []
 
-        print(f"\n--- 今回のデータ生成で使用する大学 ({len(self._selected_universities)}校) ---")
-        # 10校まで表示
-        for uni in self._selected_universities[:10]:
-            print(f"- {uni}")
-        if len(self._selected_universities) > 10:
-            print(f"...他{len(self._selected_universities) - 10}校")
-        print("-------------------------------------------\n")
+        all_uni_faculty_pairs = []
+        for uni, divisions in self._university_map.items():
+            for division, faculties in divisions.items():
+                if faculties:
+                    for faculty in faculties.keys():
+                        all_uni_faculty_pairs.append({'university': uni, 'division': division, 'faculty': faculty})
         
-        # --- Step 2: 選定された大学リストに基づいて各データを生成 ---
+        num_pairs_to_select = min(num_employees, num_recruiters)
+
+        target_pairs = [p for p in all_uni_faculty_pairs if p['university'] == target_university]
+        other_pairs = [p for p in all_uni_faculty_pairs if p['university'] != target_university]
+
+        if target_pairs and num_pairs_to_select > 0:
+            selected_target_pair = random.choice(target_pairs)
+            self._selected_uni_faculty_pairs.append(selected_target_pair)
+            
+            remaining_needed = num_pairs_to_select - 1
+            if remaining_needed > 0 and other_pairs:
+                num_to_sample = min(remaining_needed, len(other_pairs))
+                self._selected_uni_faculty_pairs.extend(random.sample(other_pairs, k=num_to_sample))
+        else:
+            if not target_pairs and num_pairs_to_select > 0:
+                print(f"警告: 指定された大学「{target_university}」がデータ定義に存在しないか、有効な学部がありません。")
+            if num_pairs_to_select > 0 and all_uni_faculty_pairs:
+                 num_to_sample = min(num_pairs_to_select, len(all_uni_faculty_pairs))
+                 self._selected_uni_faculty_pairs = random.sample(all_uni_faculty_pairs, k=num_to_sample)
+        
+        random.shuffle(self._selected_uni_faculty_pairs)
+
+        print(f"\n--- 今回のデータ生成で使用する大学-学部ペア ({len(self._selected_uni_faculty_pairs)}組) ---")
+        for pair in self._selected_uni_faculty_pairs[:10]:
+            print(f"- {pair['university']} / {pair['faculty']}")
+        if len(self._selected_uni_faculty_pairs) > 10:
+            print(f"...他{len(self._selected_uni_faculty_pairs) - 10}組")
+        print("--------------------------------------------------\n")
+        
         return {
             'students': self.generate_students(num_students),
             'employees': self.generate_employees(num_employees),
@@ -246,8 +269,7 @@ class MatchingDataGenerator:
                 if col in id_columns:
                     continue
                 print(f"\n--- {col} ---")
-                # value_counts()が空でないか確認
-                if not df[col].empty:
+                if not df.empty and col in df.columns and not df[col].empty:
                     print(df[col].value_counts().head())
                 else:
                     print("データがありません。")
@@ -256,10 +278,11 @@ def main():
     print("=== 学生・現場代表社員・リクルーターマッチングシステム ===")
     print("Step 1: ダミーデータ生成\n")
 
-    generator = MatchingDataGenerator(seed=42, output_folder="matching_data")
+    # 毎回異なるデータを生成するため、seedは指定しません。
+    # 特定の結果を再現したい場合は、seed=42 のようにシード値を指定してください。
+    generator = MatchingDataGenerator(output_folder="matching_data")
 
     print("新しいスキーマに基づいてダミーデータを生成しています...")
-    # generate_all_data内で大学の選定とデータ生成が行われる
     data_dict = generator.generate_all_data(
         num_students=50,
         num_employees=5,
