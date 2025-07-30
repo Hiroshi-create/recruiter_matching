@@ -1,7 +1,5 @@
-
-
-# 担当人数の割り当て許容差
-# この値を大きくすると、各担当者に割り当てられる学生数の差が大きくなる可能性があります。
+MIN_ASSIGNMENT_NUM = 2     # 担当可能最小人数
+MAX_ASSIGNMENT_NUM = 5     # 担当可能最大人数
 
 def calculate_assignment_range(num_students: int, num_partners: int, assignment_diff: int) -> tuple[int, int] | tuple[None, None]:
     """
@@ -18,6 +16,10 @@ def calculate_assignment_range(num_students: int, num_partners: int, assignment_
     """
     if num_partners <= 0:
         return None, None
+
+    # MIN_ASSIGNMENT_NUM, MAX_ASSIGNMENT_NUM が明示的に設定されている場合はそちらを優先
+    if MIN_ASSIGNMENT_NUM is not None and MAX_ASSIGNMENT_NUM is not None:
+        return MIN_ASSIGNMENT_NUM, MAX_ASSIGNMENT_NUM
 
     avg_assignments = num_students / num_partners
     min_assignments = max(1, int(round(avg_assignments - assignment_diff / 2)))
