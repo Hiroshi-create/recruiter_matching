@@ -131,7 +131,8 @@ def prepare_match_result_for_excel(df_match, partner_type, partners_source, stud
     """
     - 全カラムが空（全NaN）の列を除外
     - 「マッチ度順位」列がなければ、ペナルティ昇順で追加
-    - 推奨列順で並び替え
+    - 担当学生数を社員側カナ氏名の右に追加
+    - 社員カナ氏名で昇順ソート
     - highlight_matchesでセルstyle適用
     """
     if df_match is None or df_match.empty:
@@ -151,20 +152,59 @@ def prepare_match_result_for_excel(df_match, partner_type, partners_source, stud
         cols.insert(penalty_index + 1, cols.pop(cols.index('マッチ度順位')))
         df = df[cols]
     elif 'マッチ度順位' in df.columns:
-        # 既に存在すれば順序だけ整える
         cols = df.columns.tolist()
         penalty_index = cols.index('ペナルティ') if 'ペナルティ' in cols else -1
         if penalty_index != -1 and 'マッチ度順位' in cols:
             cols.insert(penalty_index + 1, cols.pop(cols.index('マッチ度順位')))
             df = df[cols]
-    # 列順
+
+    # 担当学生数を社員カナ氏名の右、社員カナ氏名で昇順
+    partner_kana_col = None
+    partner_id_col = f"{partner_type}_社員番号"
     partner_cols = [c for c in df.columns if c.startswith(f"{partner_type}_")]
+
+    for col in partner_cols:
+        if "カナ" in col:
+            partner_kana_col = col
+            break
+
+    if partner_kana_col and partner_id_col in df.columns:
+        assign_count = df[partner_id_col].value_counts()
+        id_to_kana = dict(zip(df[partner_id_col], df[partner_kana_col]))
+        kana_to_count = {id_to_kana.get(emp_id): cnt for emp_id, cnt in assign_count.items() if id_to_kana.get(emp_id) is not None}
+        new_col = df[partner_kana_col].map(kana_to_count).fillna(0).astype(int)
+        # いったん担当学生数あれば削除して再挿入
+        if "担当学生数" in df.columns:
+            df = df.drop("担当学生数", axis=1)
+        insert_idx = df.columns.get_loc(partner_kana_col) + 1
+        df.insert(insert_idx, "担当学生数", new_col)
+        # ソート
+        df = df.sort_values(partner_kana_col, ascending=True, kind="stable", na_position="last")
+
+    # --- 列順再生成: partner_cols内のカナ氏名のすぐ右に担当学生数 が来るように ---
+    # partner_cols を再構築: カナ氏名の直後に担当学生数
+    partner_cols = [c for c in df.columns if c.startswith(f"{partner_type}_")]
+    if partner_kana_col and "担当学生数" in df.columns:
+        # カナ氏名と担当学生数のペアを再構築
+        new_partner_cols = []
+        for col in partner_cols:
+            new_partner_cols.append(col)
+            if col == partner_kana_col:
+                new_partner_cols.append("担当学生数")
+        # 担当学生数が既に入っていた場合は重複回避
+        partner_cols = []
+        seen = set()
+        for col in new_partner_cols:
+            if col not in seen:
+                partner_cols.append(col)
+                seen.add(col)
+    # 続き
     student_cols = [c for c in df.columns if c.startswith("学生_")]
-    other_cols = [c for c in df.columns if not (c.startswith(f"{partner_type}_") or c.startswith("学生_"))]
+    other_cols = [c for c in df.columns if (c not in partner_cols) and (c not in student_cols)]
     reordered_columns = partner_cols + student_cols + other_cols
-    # 存在するものだけで並び替え
     reordered_columns = [c for c in reordered_columns if c in df.columns]
     df_disp = df[reordered_columns]
+
     # style
     styled = df_disp.style.apply(
         highlight_matches,
@@ -174,6 +214,8 @@ def prepare_match_result_for_excel(df_match, partner_type, partners_source, stud
         partner_type=partner_type
     )
     return styled
+
+
 
 sidebar_tables["リクルーター×学生マッチ結果"] = (
     prepare_match_result_for_excel(df_matching_recruiters, "リクルーター", df_recruiter_partners, df_recruiter_students)
