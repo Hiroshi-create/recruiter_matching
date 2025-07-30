@@ -206,47 +206,72 @@ class MatchingDataGenerator:
     def generate_all_data(self, num_students: int, num_employees: int, num_recruiters: int) -> Dict[str, pd.DataFrame]:
         """
         全てのダミーデータを生成する。
-        生成前に、使用する「大学と学部のペア」リストを選定する（関西学院大学を優先）。
+        生成前に、使用する「大学と学部のペア」リストを選定する
+        - 関西学院大学/理系/工学部ペアは必ず含める
+        - 東京大学, 慶應義塾大学, 同志社大学, 青山学院大学については大学名のみ一致でペアを必ず含める（文理・学部はランダム）
         """
-        target_university = "関西学院大学"
+        required_universities = ['東京大学', '慶應義塾大学', '同志社大学', '青山学院大学']
+        fixed_university = "関西学院大学"
+        fixed_division   = "理系"
+        fixed_faculty    = "工学部"
         self._selected_uni_faculty_pairs = []
 
+        # 1. 全ペア走査で記録
         all_uni_faculty_pairs = []
+        fixed_pair = None
+        candidate_pairs_for_univ = {name: [] for name in required_universities}
         for uni, divisions in self._university_map.items():
             for division, faculties in divisions.items():
                 if faculties:
-                    for faculty in faculties.keys():
-                        all_uni_faculty_pairs.append({'university': uni, 'division': division, 'faculty': faculty})
-        
+                    for faculty, departments in faculties.items():
+                        pair = {'university': uni, 'division': division, 'faculty': faculty}
+                        all_uni_faculty_pairs.append(pair)
+                        # まず関学/理系/工学部ペア
+                        if uni == fixed_university and division == fixed_division and faculty == fixed_faculty:
+                            fixed_pair = {'university': uni, 'division': division, 'faculty': faculty}
+                        # 東京大学, 慶應義塾大学, 同志社大学, 青山学院大学は候補として記憶
+                        if uni in required_universities:
+                            candidate_pairs_for_univ[uni].append({'university': uni, 'division': division, 'faculty': faculty})
         num_pairs_to_select = min(num_employees, num_recruiters)
 
-        target_pairs = [p for p in all_uni_faculty_pairs if p['university'] == target_university]
-        other_pairs = [p for p in all_uni_faculty_pairs if p['university'] != target_university]
-
-        if target_pairs and num_pairs_to_select > 0:
-            selected_target_pair = random.choice(target_pairs)
-            self._selected_uni_faculty_pairs.append(selected_target_pair)
-            
-            remaining_needed = num_pairs_to_select - 1
-            if remaining_needed > 0 and other_pairs:
-                num_to_sample = min(remaining_needed, len(other_pairs))
-                self._selected_uni_faculty_pairs.extend(random.sample(other_pairs, k=num_to_sample))
+        # 2. 関学/理系/工学部は必ず
+        if fixed_pair is not None:
+            self._selected_uni_faculty_pairs.append(fixed_pair)
         else:
-            if not target_pairs and num_pairs_to_select > 0:
-                print(f"警告: 指定された大学「{target_university}」がデータ定義に存在しないか、有効な学部がありません。")
-            if num_pairs_to_select > 0 and all_uni_faculty_pairs:
-                 num_to_sample = min(num_pairs_to_select, len(all_uni_faculty_pairs))
-                 self._selected_uni_faculty_pairs = random.sample(all_uni_faculty_pairs, k=num_to_sample)
-        
+            print(f"警告: {fixed_university} / {fixed_division} / {fixed_faculty} がデータ定義にありません！")
+
+        # 3. 各大学名ごとに「ランダムなペア」を抽出＆追加（重複回避）
+        for uni in required_universities:
+            cand = candidate_pairs_for_univ[uni]
+            if not cand:
+                print(f"警告: {uni} の有効な学部ペアが見つかりません！")
+                continue
+            # 重複回避
+            used = set((p['university'], p['division'], p['faculty']) for p in self._selected_uni_faculty_pairs)
+            remain = [p for p in cand if (p['university'], p['division'], p['faculty']) not in used]
+            if not remain:
+                print(f"警告: {uni} ですでにペアが採用されているか、候補がありません！")
+                continue
+            pick = random.choice(remain)
+            self._selected_uni_faculty_pairs.append(pick)
+
+        # 4. 残り枠を全候補から補充（すでに使ったペアは除く）
+        already = set((p['university'], p['division'], p['faculty']) for p in self._selected_uni_faculty_pairs)
+        candidates = [p for p in all_uni_faculty_pairs
+                    if (p['university'], p['division'], p['faculty']) not in already]
+        rest = num_pairs_to_select - len(self._selected_uni_faculty_pairs)
+        if rest > 0 and len(candidates) > 0:
+            self._selected_uni_faculty_pairs.extend(random.sample(candidates, k=min(rest, len(candidates))))
+
         random.shuffle(self._selected_uni_faculty_pairs)
 
-        print(f"\n--- 今回のデータ生成で使用する大学-学部ペア ({len(self._selected_uni_faculty_pairs)}組) ---")
+        print(f"\n--- 今回のデータ生成で使用する大学-文理-学部ペア ({len(self._selected_uni_faculty_pairs)}組) ---")
         for pair in self._selected_uni_faculty_pairs[:10]:
-            print(f"- {pair['university']} / {pair['faculty']}")
+            print(f"- {pair['university']} / {pair['division']} / {pair['faculty']}")
         if len(self._selected_uni_faculty_pairs) > 10:
             print(f"...他{len(self._selected_uni_faculty_pairs) - 10}組")
         print("--------------------------------------------------\n")
-        
+
         return {
             'students': self.generate_students(num_students),
             'employees': self.generate_employees(num_employees),
@@ -284,9 +309,9 @@ def main():
 
     print("新しいスキーマに基づいてダミーデータを生成しています...")
     data_dict = generator.generate_all_data(
-        num_students=50,
-        num_employees=5,
-        num_recruiters=5
+        num_students=const.NUM_STUDENTS,
+        num_employees=const.NUM_EMPLOYEES,
+        num_recruiters=const.NUM_RECRUITERS
     )
 
     generator.display_statistics(data_dict)

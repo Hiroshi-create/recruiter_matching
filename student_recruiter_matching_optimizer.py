@@ -8,7 +8,7 @@
 
 このプログラムは、matching_dataフォルダ内のCSVファイル
 （students_data.csv, employees_data.csv, recruiters_data.csv）を読み込み、
-01整数計画問題を用いて学生と担当社員（リクルーターまたは現場社員）の最適マッチングを2種類行います。
+01整数計画問題を用いて学生と担当社員（リクルーターまたは現場代表社員）の最適マッチングを2種類行います。
 属性の一致度を最大化しながら、担当者の負荷を動的に計算された範囲で分散させることを目標とします。
 最終的なアウトプットは output_results フォルダ内にCSVとして個別に保存します。
 
@@ -24,8 +24,11 @@ import pulp as pl
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
-import os
 warnings.filterwarnings('ignore')
+import os
+import data_definitions as const
+import config
+
 
 
 # 日本語フォント設定
@@ -95,7 +98,7 @@ class StudentRecruitingOptimizerFromCSV:
 
     def set_partner(self, partner_type):
         """
-        マッチング対象のパートナー（リクルーターか現場社員か）を設定する。
+        マッチング対象のパートナー（リクルーターか現場代表社員か）を設定する。
         """
         # 1. マッチングに【使用しない】項目を定義
         exclude_keys = ['応募者コード', 'カナ氏名', '合否']
@@ -124,9 +127,9 @@ class StudentRecruitingOptimizerFromCSV:
 
         elif partner_type == 'employee':
             self.partner_df = self.df_employees_orig.copy()
-            self.partner_name_jp = '現場社員'
+            self.partner_name_jp = '現場代表社員'
             
-            # 4. 現場社員データに存在しない属性を優先順位から自動的に除外
+            # 4. 現場代表社員データに存在しない属性を優先順位から自動的に除外
             self.ordered_keys = [key for key in self.ordered_keys if key in self.partner_df.columns or key == '地域']
 
 
@@ -244,14 +247,12 @@ class StudentRecruitingOptimizerFromCSV:
         num_students = len(self.df_students)
         num_partners = len(self.partner_df)
 
-
-        if num_partners > 0:
-            avg_assignments = num_students / num_partners
-            min_assignments = max(1, int(round(avg_assignments - assignment_diff / 2)))
-            max_assignments = int(round(avg_assignments + assignment_diff / 2))
-            if max_assignments < min_assignments:
-                max_assignments = min_assignments
-        else:
+        # config.pyの関数を呼び出して担当人数の範囲を計算
+        min_assignments, max_assignments = config.calculate_assignment_range(
+            num_students, num_partners, assignment_diff
+        )
+        
+        if min_assignments is None:
             print(f"警告: {self.partner_name_jp}が0人のため、マッチングを実行できません。")
             return None, None
 
@@ -259,7 +260,6 @@ class StudentRecruitingOptimizerFromCSV:
         if verbose:
             print(f"最適化問題の定式化...")
             print(f"変数数: {num_students} x {num_partners} = {num_students * num_partners}")
-            print(f"担当人数制約: {min_assignments}人 ~ {max_assignments}人 (平均: {avg_assignments:.1f}人, 許容差: {assignment_diff}人)")
 
 
         prob = pl.LpProblem("Student_Partner_Matching", pl.LpMinimize)
@@ -435,10 +435,7 @@ def main():
     print("1. 全データの読み込みと前処理完了。")
     print(f"学生数: {len(optimizer.df_students)}")
     print(f"リクルーター数: {len(optimizer.df_recruiters_orig)}")
-    print(f"現場社員数: {len(optimizer.df_employees_orig)}")
-
-
-    ASSIGNMENT_DIFFERENCE = 10 
+    print(f"現場代表社員数: {len(optimizer.df_employees_orig)}")
     
     # --- フェーズ1: 学生 vs リクルーターのマッチング ---
     optimizer.set_partner('recruiter')
@@ -446,7 +443,7 @@ def main():
     print("\n2-1. [リクルーター] ペナルティ重みの自動最適化を実行...")
     optimizer.optimize_penalty_weights(
         iterations=20, initial_base_weight=200, learning_rate=1.1,
-        assignment_diff=ASSIGNMENT_DIFFERENCE
+        assignment_diff=const.ASSIGNMENT_DIFFERENCE
     )
 
 
@@ -456,7 +453,7 @@ def main():
 
     print("\n3-1. [リクルーター] 最適化された重みで最終的なマッチングを実行...")
     matching_results_rec, _ = optimizer.solve_optimization(
-        assignment_diff=ASSIGNMENT_DIFFERENCE, verbose=True
+        assignment_diff=const.ASSIGNMENT_DIFFERENCE, verbose=True
     )
 
 
@@ -470,34 +467,34 @@ def main():
         print("[リクルーター] マッチングの最適化に失敗しました。")
 
 
-    # --- フェーズ2: 学生 vs 現場社員のマッチング ---
+    # --- フェーズ2: 学生 vs 現場代表社員のマッチング ---
     optimizer.set_partner('employee')
 
 
-    print("\n2-2. [現場社員] ペナルティ重みの自動最適化を実行...")
+    print("\n2-2. [現場代表社員] ペナルティ重みの自動最適化を実行...")
     optimizer.optimize_penalty_weights(
         iterations=20, initial_base_weight=200, learning_rate=1.1,
-        assignment_diff=ASSIGNMENT_DIFFERENCE
+        assignment_diff=const.ASSIGNMENT_DIFFERENCE
     )
 
 
-    print("\n[現場社員] 最適化された重みの保存...")
+    print("\n[現場代表社員] 最適化された重みの保存...")
     optimizer.save_optimized_weights("optimized_weights")
 
 
-    print("\n3-2. [現場社員] 最適化された重みで最終的なマッチングを実行...")
+    print("\n3-2. [現場代表社員] 最適化された重みで最終的なマッチングを実行...")
     matching_results_emp, _ = optimizer.solve_optimization(
-        assignment_diff=ASSIGNMENT_DIFFERENCE, verbose=True
+        assignment_diff=const.ASSIGNMENT_DIFFERENCE, verbose=True
     )
     
     if matching_results_emp is not None:
-        print("\n4-2. [現場社員] 最終結果の分析...")
+        print("\n4-2. [現場代表社員] 最終結果の分析...")
         optimizer.analyze_results()
 
-        print("\n5-2. [現場社員] 結果の保存...")
+        print("\n5-2. [現場代表社員] 結果の保存...")
         optimizer.save_results("matching_results")
     else:
-        print("[現場社員] マッチングの最適化に失敗しました。")
+        print("[現場代表社員] マッチングの最適化に失敗しました。")
     
     print("\n=== 全ての最適化が完了しました ===")
 
