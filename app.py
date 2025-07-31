@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib_fontja
@@ -8,14 +9,19 @@ import io
 import os
 import data_definitions as const
 
+
 try:
     import config
 except ImportError:
     st.error("`config.py` が見つかりません。Streamlitアプリケーションと同じディレクトリに配置されているか確認してください。")
     st.stop()
 
+
+
 # openpyxlのインストール
 # pip install openpyxl
+
+
 
 try:
     sns.set(font="IPAexGothic", style="whitegrid")
@@ -23,8 +29,12 @@ except Exception:
     st.warning("日本語フォント（IPAexGothic）が見つかりません。グラフの文字化けが発生する可能性があります。`pip install japanize-matplotlib` をお試しください。")
     sns.set(style="whitegrid")
 
+
+
 st.set_page_config(layout="wide")
 st.title("学生・担当者 マッチング結果 可視化レポート")
+
+
 
 st.sidebar.title("⚙️ 設定")
 partner_type_selection = st.sidebar.radio(
@@ -32,77 +42,57 @@ partner_type_selection = st.sidebar.radio(
     ("使用データ確認", "リクルーター", "現場代表社員")
 )
 
-# --- ▼ マッチングセル色付け関数（df, partner_type, source_dfs を受け取って style返す） ---
-def highlight_matches(row, df_partners_source, df_students_source, partner_type):
-    ncols = len(row)
-    styles = [''] * ncols
-    highlight_style = 'background-color: #28a745;'   # 緑
-    impossible_style = 'background-color: #FF8A80;' # 赤
-    no_match_style = 'background-color: #FFD700;'   # 黄色
-    attributes_to_check = ['大学名称', '学部名称', '学科名称', '文理区分', '応募者区分', '性別', '性格タイプ', '地域']
-    for attr in attributes_to_check:
-        s_col = f'学生_{attr}'
-        p_col = f'{partner_type}_{attr}'
-        src_col = attr
-        if s_col not in row.index or p_col not in row.index:
-            continue
-        s_col_idx = row.index.get_loc(s_col)
-        p_col_idx = row.index.get_loc(p_col)
-        student_value = row[s_col]
-        partner_value = row[p_col]
-        is_student_impossible = False
-        is_partner_impossible = False
-        if src_col in df_partners_source.columns and pd.notna(student_value):
-            if student_value not in df_partners_source[src_col].dropna().unique():
-                is_student_impossible = True
-        if src_col in df_students_source.columns and pd.notna(partner_value):
-            if partner_value not in df_students_source[src_col].dropna().unique():
-                is_partner_impossible = True
-        if pd.notna(student_value) and student_value == partner_value:
-            if not is_student_impossible and not is_partner_impossible:
-                styles[s_col_idx] = highlight_style
-                styles[p_col_idx] = highlight_style
-        elif is_student_impossible:
-            styles[s_col_idx] = impossible_style
-        elif is_partner_impossible:
-            styles[p_col_idx] = impossible_style
-        else:
-            styles[s_col_idx] = no_match_style
-            styles[p_col_idx] = no_match_style
-    return styles
+
 
 # --- ▼ データ読込共通部 ---
 employees_file = "matching_data/employees_data.csv"
 recruiters_file = "matching_data/recruiters_data.csv"
-students_file   = "matching_data/students_data.csv"
+students_file = "matching_data/students_data.csv"
+
+def clean_string_columns(df):
+    if df is None:
+        return None
+    for col in df.select_dtypes(include=['object']).columns:
+        if pd.api.types.is_string_dtype(df[col]):
+            df[col] = df[col].str.replace('\u3000', ' ', regex=False).str.replace('\xa0', ' ', regex=False).str.strip()
+    return df
 
 df_students, df_recruiters, df_employees = None, None, None
 try:
-    df_students = pd.read_csv(students_file)
+    df_students = pd.read_csv(students_file, na_values=[''])
+    df_students = clean_string_columns(df_students)
 except Exception:
     df_students = None
 try:
-    df_recruiters = pd.read_csv(recruiters_file)
+    df_recruiters = pd.read_csv(recruiters_file, na_values=[''])
+    df_recruiters = clean_string_columns(df_recruiters)
 except Exception:
     df_recruiters = None
 try:
-    df_employees = pd.read_csv(employees_file)
+    df_employees = pd.read_csv(employees_file, na_values=[''])
+    df_employees = clean_string_columns(df_employees)
 except Exception:
     df_employees = None
 
-matching_results_recruiters_file  = "output_results/matching_results_recruiters.csv"
-matching_results_employees_file   = "output_results/matching_results_employees.csv"
+
+
+matching_results_recruiters_file = "output_results/matching_results_recruiters.csv"
+matching_results_employees_file = "output_results/matching_results_employees.csv"
 df_matching_recruiters, df_matching_employees = None, None
 try:
-    df_matching_recruiters = pd.read_csv(matching_results_recruiters_file)
+    df_matching_recruiters = pd.read_csv(matching_results_recruiters_file, na_values=[''])
+    df_matching_recruiters = clean_string_columns(df_matching_recruiters)
 except Exception:
     df_matching_recruiters = None
 try:
-    df_matching_employees = pd.read_csv(matching_results_employees_file)
+    df_matching_employees = pd.read_csv(matching_results_employees_file, na_values=[''])
+    df_matching_employees = clean_string_columns(df_matching_employees)
 except Exception:
     df_matching_employees = None
 
-# --- ▼ マッチングセル色付け用パートナー,学生DF抽出 helpers ---
+
+
+# --- ▼ マッチング結果から元データの一部を抽出するヘルパー関数 ---
 def extract_source_partners_students(df, partner_type):
     if df is None or df.empty:
         return pd.DataFrame(), pd.DataFrame()
@@ -114,56 +104,33 @@ def extract_source_partners_students(df, partner_type):
     df_src_students = df[list(student_cols.keys())].rename(columns=student_cols).drop_duplicates().reset_index(drop=True)
     return df_src_partners, df_src_students
 
-df_recruiter_partners, df_recruiter_students = extract_source_partners_students(df_matching_recruiters, "リクルーター")
-df_employee_partners, df_employee_students   = extract_source_partners_students(df_matching_employees, "現場代表社員")
 
-# --- ▼ サイドバー一括エクスポート用すべてのテーブル(あとでstyle) ---
-sidebar_tables = {
-    "学生データ": df_students,
-    "リクルーターデータ": df_recruiters,
-    "現場代表社員データ": df_employees,
-    "リクルーター×学生マッチ結果": None,   # スタイル付与後に詰める
-    "現場代表社員×学生マッチ結果": None,
-}
 
-# --------- MATCH用色付きDataFrameを生成（pandas style）---------
-def prepare_match_result_for_excel(df_match, partner_type, partners_source, students_source):
-    """
-    - 全カラムが空（全NaN）の列を除外
-    - 「マッチ度順位」列がなければ、ペナルティ昇順で追加
-    - 担当学生数を社員側カナ氏名の右に追加
-    - 社員カナ氏名で昇順ソート
-    - highlight_matchesでセルstyle適用
-    """
+# --------- マッチング結果のDataFrameを整形する関数 ---------
+def prepare_match_result_for_excel(df_match, partner_type):
     if df_match is None or df_match.empty:
         return None
     df = df_match.copy()
-
-    # 全NaN列を除外
     columns_all_nan = [col for col in df.columns if df[col].isnull().all()]
     df = df.drop(columns=columns_all_nan)
 
-    # 「マッチ度順位」なければ作成
     if 'ペナルティ' in df.columns and 'マッチ度順位' not in df.columns:
         df['マッチ度順位'] = df['ペナルティ'].rank(method='min', ascending=True).astype(int)
-        # 「マッチ度順位」を「ペナルティ」のすぐ右に
+    
+    if 'マッチ度順位' in df.columns and 'ペナルティ' in df.columns:
         cols = df.columns.tolist()
-        penalty_index = cols.index('ペナルティ')
-        cols.insert(penalty_index + 1, cols.pop(cols.index('マッチ度順位')))
-        df = df[cols]
-    elif 'マッチ度順位' in df.columns:
-        cols = df.columns.tolist()
-        penalty_index = cols.index('ペナルティ') if 'ペナルティ' in cols else -1
-        if penalty_index != -1 and 'マッチ度順位' in cols:
-            cols.insert(penalty_index + 1, cols.pop(cols.index('マッチ度順位')))
+        try:
+            cols.remove('マッチ度順位')
+            penalty_index = cols.index('ペナルティ')
+            cols.insert(penalty_index + 1, 'マッチ度順位')
             df = df[cols]
+        except ValueError:
+            pass
 
-    # 担当学生数を社員カナ氏名の右、社員カナ氏名で昇順
     partner_kana_col = None
     partner_id_col = f"{partner_type}_社員番号"
-    partner_cols = [c for c in df.columns if c.startswith(f"{partner_type}_")]
-
-    for col in partner_cols:
+    partner_cols_prefix = [c for c in df.columns if c.startswith(f"{partner_type}_")]
+    for col in partner_cols_prefix:
         if "カナ" in col:
             partner_kana_col = col
             break
@@ -173,71 +140,142 @@ def prepare_match_result_for_excel(df_match, partner_type, partners_source, stud
         id_to_kana = dict(zip(df[partner_id_col], df[partner_kana_col]))
         kana_to_count = {id_to_kana.get(emp_id): cnt for emp_id, cnt in assign_count.items() if id_to_kana.get(emp_id) is not None}
         new_col = df[partner_kana_col].map(kana_to_count).fillna(0).astype(int)
-        # いったん担当学生数あれば削除して再挿入
+
         if "担当学生数" in df.columns:
             df = df.drop("担当学生数", axis=1)
         insert_idx = df.columns.get_loc(partner_kana_col) + 1
         df.insert(insert_idx, "担当学生数", new_col)
-        # ソート
         df = df.sort_values(partner_kana_col, ascending=True, kind="stable", na_position="last")
 
-    # --- 列順再生成: partner_cols内のカナ氏名のすぐ右に担当学生数 が来るように ---
-    # partner_cols を再構築: カナ氏名の直後に担当学生数
     partner_cols = [c for c in df.columns if c.startswith(f"{partner_type}_")]
-    if partner_kana_col and "担当学生数" in df.columns:
-        # カナ氏名と担当学生数のペアを再構築
-        new_partner_cols = []
-        for col in partner_cols:
-            new_partner_cols.append(col)
-            if col == partner_kana_col:
-                new_partner_cols.append("担当学生数")
-        # 担当学生数が既に入っていた場合は重複回避
-        partner_cols = []
-        seen = set()
-        for col in new_partner_cols:
-            if col not in seen:
-                partner_cols.append(col)
-                seen.add(col)
-    # 続き
+    if partner_kana_col and "担当学生数" in df.columns and "担当学生数" not in partner_cols:
+        p_kana_idx = partner_cols.index(partner_kana_col)
+        partner_cols.insert(p_kana_idx + 1, "担当学生数")
+
     student_cols = [c for c in df.columns if c.startswith("学生_")]
     other_cols = [c for c in df.columns if (c not in partner_cols) and (c not in student_cols)]
     reordered_columns = partner_cols + student_cols + other_cols
     reordered_columns = [c for c in reordered_columns if c in df.columns]
-    df_disp = df[reordered_columns]
-
-    # style
-    styled = df_disp.style.apply(
-        highlight_matches,
-        axis=1,
-        df_partners_source=partners_source,
-        df_students_source=students_source,
-        partner_type=partner_type
-    )
-    return styled
+    return df[reordered_columns]
 
 
+# --- ▼ スタイル適用済みテーブルを作成する準備と関数 ---
 
-sidebar_tables["リクルーター×学生マッチ結果"] = (
-    prepare_match_result_for_excel(df_matching_recruiters, "リクルーター", df_recruiter_partners, df_recruiter_students)
-    if df_matching_recruiters is not None and not df_matching_recruiters.empty else None
+def style_cells(row, partner_type, attributes_to_color, student_cols_map, partner_cols_map,
+                student_unique_values, partner_unique_values, student_df_cols, partner_df_cols):
+    styles = [''] * len(row)
+    for attr in attributes_to_color:
+        s_col, p_col = student_cols_map.get(attr), partner_cols_map.get(attr)
+        if not s_col or not p_col: continue
+
+        s_val, p_val = row.get(s_col), row.get(p_col)
+        s_idx, p_idx = row.index.get_loc(s_col), row.index.get_loc(p_col)
+
+        is_match = False
+        if pd.notna(s_val) and pd.notna(p_val):
+            if attr == '所属' and partner_type == 'リクルーター':
+                is_match = str(s_val) in str(p_val)
+            else:
+                is_match = str(s_val) == str(p_val)
+        
+        if pd.notna(s_val):
+            if is_match:
+                styles[s_idx] = 'background-color: #28a745'
+            else:
+                is_unmatchable = (
+                    attr not in partner_df_cols or pd.isna(p_val) or
+                    (s_val not in partner_unique_values.get(attr, set()) and (attr != '所属' or partner_type != 'リクルーター')) or
+                    (attr == '所属' and partner_type == 'リクルーター' and not any(str(s_val) in str(pv) for pv in partner_unique_values.get(attr, set())))
+                )
+                styles[s_idx] = 'background-color: #FF8A80' if is_unmatchable else 'background-color: #FFD700'
+
+        if pd.notna(p_val):
+            if is_match:
+                styles[p_idx] = 'background-color: #28a745'
+            else:
+                student_check_attr = '学部名称' if attr == '所属' and partner_type == 'リクルーター' else attr
+                is_unmatchable = (
+                    student_check_attr not in student_df_cols or pd.isna(s_val) or
+                    (p_val not in student_unique_values.get(attr, set()) and (attr != '所属' or partner_type != 'リクルーター')) or
+                    (attr == '所属' and partner_type == 'リクルーター' and not any(str(sv) in str(p_val) for sv in student_unique_values.get(attr, set())))
+                )
+                styles[p_idx] = 'background-color: #FF8A80' if is_unmatchable else 'background-color: #FFD700'
+                
+    return styles
+
+def create_styled_dataframe(df_match, partner_type, df_students, df_all_partners, weights_file):
+    if df_match is None or df_match.empty:
+        return None
+
+    df_display = prepare_match_result_for_excel(df_match, partner_type)
+    if df_display is None:
+        return None
+
+    try:
+        df_w = pd.read_csv(weights_file, na_values=[''])
+        priority_attributes = df_w.sort_values('重み', ascending=False)['属性'].tolist()
+    except Exception:
+        priority_attributes = []
+
+    student_prefix = "学生_"
+    partner_prefix = f"{partner_type}_"
+    student_cols_map = {c.replace(student_prefix, ''): c for c in df_display.columns if c.startswith(student_prefix)}
+    partner_cols_map = {c.replace(partner_prefix, ''): c for c in df_display.columns if c.startswith(partner_prefix)}
+    
+    attributes_to_color = [attr for attr in priority_attributes if attr in student_cols_map and attr in partner_cols_map]
+    if partner_type == 'リクルーター' and '所属' in partner_cols_map and '所属' not in attributes_to_color:
+        attributes_to_color.append('所属')
+
+    student_unique_values, partner_unique_values = {}, {}
+    if df_students is not None:
+        for attr in attributes_to_color:
+            source_attr = '学部名称' if attr == '所属' else attr
+            if source_attr in df_students.columns:
+                student_unique_values[attr] = set(df_students[source_attr].dropna().unique())
+
+    if df_all_partners is not None:
+        for attr in attributes_to_color:
+            if attr in df_all_partners.columns:
+                partner_unique_values[attr] = set(df_all_partners[attr].dropna().unique())
+
+    student_df_cols = set(df_students.columns) if df_students is not None else set()
+    partner_df_cols = set(df_all_partners.columns) if df_all_partners is not None else set()
+
+    return df_display.style.apply(
+        style_cells, axis=1,
+        partner_type=partner_type, attributes_to_color=attributes_to_color,
+        student_cols_map=student_cols_map, partner_cols_map=partner_cols_map,
+        student_unique_values=student_unique_values, partner_unique_values=partner_unique_values,
+        student_df_cols=student_df_cols, partner_df_cols=partner_df_cols
+    ).format(na_rep='-')
+
+styler_recruiters = create_styled_dataframe(
+    df_matching_recruiters, "リクルーター", df_students, df_recruiters, "output_results/optimized_weights_recruiters.csv"
 )
-sidebar_tables["現場代表社員×学生マッチ結果"] = (
-    prepare_match_result_for_excel(df_matching_employees, "現場代表社員", df_employee_partners, df_employee_students)
-    if df_matching_employees is not None and not df_matching_employees.empty else None
+styler_employees = create_styled_dataframe(
+    df_matching_employees, "現場代表社員", df_students, df_employees, "output_results/optimized_weights_employees.csv"
 )
 
-# --- ▼ すべてのテーブルをExcel多シート（必要なものはstyleで色付き！） ---
+# --- ▼ サイドバー一括エクスポート用すべてのテーブル ---
+sidebar_tables = {
+    "学生データ": df_students,
+    "リクルーターデータ": df_recruiters,
+    "現場代表社員データ": df_employees,
+    "リクルーター×学生マッチ結果": styler_recruiters,
+    "現場代表社員×学生マッチ結果": styler_employees,
+}
+
+# --- ▼ すべてのテーブルをExcel多シートに出力する関数 (Styler対応) ---
 def export_tables_to_excel(tables_dict):
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        for sheet_name, df_obj in tables_dict.items():
-            if df_obj is not None:
-                safe_name = sheet_name[:31]
-                # DataFrameかStylerか判定して出し分け
-                if isinstance(df_obj, pd.io.formats.style.Styler):
-                    df_obj.to_excel(writer, sheet_name=safe_name, index=False)
-                elif isinstance(df_obj, pd.DataFrame) and not df_obj.empty:
-                    df_obj.to_excel(writer, sheet_name=safe_name, index=False)
+        for sheet_name, obj in tables_dict.items():
+            if obj is None: continue
+            safe_name = sheet_name[:31]
+            if isinstance(obj, pd.io.formats.style.Styler):
+                obj.to_excel(writer, sheet_name=safe_name, index=False)
+            elif isinstance(obj, pd.DataFrame):
+                obj.to_excel(writer, sheet_name=safe_name, index=False)
     out.seek(0)
     return out
 
@@ -263,43 +301,47 @@ if partner_type_selection == "使用データ確認":
             st.dataframe(df_employees, use_container_width=True)
         else:
             st.error("現場代表社員データの読み込みに失敗しました。")
-    # --- ▼ サイドバー下部で必ずダウンロードボタンを表示 ---
+    
     st.sidebar.divider()
     st.sidebar.subheader("すべてのテーブルをExcelでダウンロード")
-    usable_tables = [k for k, df in sidebar_tables.items() if df is not None and (not isinstance(df, pd.DataFrame) or not df.empty)]
-    if len(usable_tables) == len(sidebar_tables):
+    if all(table is not None for table in sidebar_tables.values()):
         excel_out = export_tables_to_excel(sidebar_tables)
         st.sidebar.download_button(
             label="全てのテーブルをExcelで一括ダウンロード",
             data=excel_out,
-            file_name="all_tables.xlsx",
+            file_name="all_tables_styled.xlsx", # ファイル名を変更
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            help="学生・担当者原データ3種類と各担当者種別のマッチング結果を全て1つのExcelファイルでダウンロードします（シート分割、マッチ結果はセル色付き）。"
+            help="学生・担当者原データ3種類と各担当者種別のスタイル付きマッチング結果を全て1つのExcelファイルでダウンロードします。"
         )
     else:
-        st.sidebar.info("全データが揃っていません。全てのCSVファイルをご用意ください。")
+        st.sidebar.info("一部のデータファイルが見つからないため、一括ダウンロードはできません。全てのCSVファイルをご用意ください。")
     st.stop()
 
+
+
 # --- ▼ マッチング分析部 ---
+if partner_type_selection == "リクルーター":
+    df = df_matching_recruiters
+    df_styler = styler_recruiters
+    weights_file = "output_results/optimized_weights_recruiters.csv"
+else:
+    df = df_matching_employees
+    df_styler = styler_employees
+    weights_file = "output_results/optimized_weights_employees.csv"
+
 @st.cache_data
 def load_priority_attributes(weights_path):
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
         weights_full_path = os.path.join(base_dir, weights_path)
-        df_weights = pd.read_csv(weights_full_path)
+        df_weights = pd.read_csv(weights_full_path, na_values=[''])
+        df_weights = clean_string_columns(df_weights)
         sorted_attrs = df_weights.sort_values('重み', ascending=False)['属性'].tolist()
         return df_weights, sorted_attrs, None
     except FileNotFoundError:
-        return None, [], f"重みファイルが見つかりません: {weights_full_path}。 スクリプトと同じ階層に`output_results`フォルダを配置してください。"
+        return None, [], f"重みファイルが見つかりません: {weights_full_path}"
     except Exception as e:
         return None, [], f"重みファイルの読み込み中にエラーが発生しました: {e}"
-
-if partner_type_selection == "リクルーター":
-    results_file = matching_results_recruiters_file
-    weights_file = "output_results/optimized_weights_recruiters.csv"
-else:
-    results_file = matching_results_employees_file
-    weights_file = "output_results/optimized_weights_employees.csv"
 
 df_weights, priority_attributes, error_message_weights = load_priority_attributes(weights_file)
 if error_message_weights:
@@ -309,81 +351,12 @@ if error_message_weights:
 st.header(f"学生 対 {partner_type_selection} マッチング分析")
 st.write(f"最適化計算によって得られた学生と{partner_type_selection}のマッチング結果を分析・可視化します。")
 
-@st.cache_data
-def load_data(results_path, partner_type):
-    base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
-    results_full_path = os.path.join(base_dir, results_path)
-    try:
-        df_res = pd.read_csv(results_full_path)
-        partner_prefix = f"{partner_type}_"
-        partner_cols = {col: col.replace(partner_prefix, '') for col in df_res.columns if col.startswith(partner_prefix)}
-        df_src_partners = df_res[list(partner_cols.keys())].rename(columns=partner_cols).drop_duplicates().reset_index(drop=True)
-        student_prefix = "学生_"
-        student_cols = {col: col.replace(student_prefix, '') for col in df_res.columns if col.startswith(student_prefix)}
-        df_src_students = df_res[list(student_cols.keys())].rename(columns=student_cols).drop_duplicates().reset_index(drop=True)
-        return df_res, df_src_partners, df_src_students, None
-    except FileNotFoundError:
-        return None, None, None, f"結果ファイルが見つかりません: {results_full_path}。 スクリプトと同じ階層に`output_results`フォルダを配置してください。"
-    except Exception as e:
-        return None, None, None, f"ファイルの読み込み中にエラーが発生しました: {e}"
-
-df, df_source_partners, df_source_students, error_message = load_data(results_file, partner_type_selection)
-if error_message:
-    st.error(f"エラー: {error_message}")
+if df is None:
+    st.error(f"マッチング結果ファイルが見つかりません。")
     st.info("app.pyと同じ階層に`output_results`フォルダとCSVファイルが正しく配置されているか確認してください。")
     st.stop()
 
-if 'ペナルティ' in df.columns:
-    df['マッチ度順位'] = df['ペナルティ'].rank(method='min', ascending=True).astype(int)
-    cols = df.columns.tolist()
-    if 'マッチ度順位' in cols:
-        try:
-            penalty_index = cols.index('ペナルティ')
-            cols.insert(penalty_index + 1, cols.pop(cols.index('マッチ度順位')))
-            df = df[cols]
-        except ValueError:
-            pass
-
-def highlight_matches(row, df_partners_source, df_students_source, partner_type):
-    ncols = len(row)
-    styles = [''] * ncols
-    highlight_style = 'background-color: #28a745;'   # 緑
-    impossible_style = 'background-color: #FF8A80;' # 赤
-    no_match_style = 'background-color: #FFD700;'   # 黄色
-    attributes_to_check = ['大学名称', '学部名称', '学科名称', '文理区分', '応募者区分', '性別', '性格タイプ', '地域']
-    for attr in attributes_to_check:
-        s_col = f'学生_{attr}'
-        p_col = f'{partner_type}_{attr}'
-        src_col = attr
-        if s_col not in row.index or p_col not in row.index:
-            continue
-        s_col_idx = row.index.get_loc(s_col)
-        p_col_idx = row.index.get_loc(p_col)
-        student_value = row[s_col]
-        partner_value = row[p_col]
-        is_student_impossible = False
-        is_partner_impossible = False
-        if src_col in df_partners_source.columns and pd.notna(student_value):
-            if student_value not in df_partners_source[src_col].dropna().unique():
-                is_student_impossible = True
-        if src_col in df_students_source.columns and pd.notna(partner_value):
-            if partner_value not in df_students_source[src_col].dropna().unique():
-                is_partner_impossible = True
-        if pd.notna(student_value) and student_value == partner_value:
-            if not is_student_impossible and not is_partner_impossible:
-                styles[s_col_idx] = highlight_style
-                styles[p_col_idx] = highlight_style
-        elif is_student_impossible:
-            styles[s_col_idx] = impossible_style
-        elif is_partner_impossible:
-            styles[p_col_idx] = impossible_style
-        else:
-            styles[s_col_idx] = no_match_style
-            styles[p_col_idx] = no_match_style
-    return styles
-
 st.subheader(f"属性別の重みと一致率 ({partner_type_selection})")
-
 ordered_match_info = {}
 display_order = [f"{attr}一致率" for attr in priority_attributes]
 for key in display_order:
@@ -394,8 +367,7 @@ for key in display_order:
             rate = df.apply(lambda row: pd.notna(row[s_col]) and pd.notna(row[p_col]) and row[s_col] in row[p_col], axis=1).mean()
     else:
         attribute_name = key.replace('一致率', '')
-        s_col = f'学生_{attribute_name}'
-        p_col = f'{partner_type_selection}_{attribute_name}'
+        s_col, p_col = f'学生_{attribute_name}', f'{partner_type_selection}_{attribute_name}'
         if s_col in df.columns and p_col in df.columns:
             valid_rows = df[[s_col, p_col]].dropna()
             rate = 0.0 if valid_rows.empty else (valid_rows[s_col] == valid_rows[p_col]).mean()
@@ -406,16 +378,13 @@ if df_weights is not None:
     if ordered_match_info:
         match_df = pd.DataFrame.from_dict(ordered_match_info, orient='index', columns=['一致率'])
         match_df.index = match_df.index.str.replace('一致率', '')
-        merged_df = df_w.join(match_df, how='left')
+        merged_df = df_w.join(match_df, how='left').replace(np.nan, None)
         st.write("各属性の重みと、実際のマッチング結果における一致率を可視化しています。")
-        st.dataframe(
-            merged_df.style.format({"重み": "{:.3f}", "一致率": "{:.1%}"})
-            .bar(subset=["重み"], color='#FFA07A')
-            .bar(subset=["一致率"], color='#90EE90'),
-            use_container_width=True
-        )
+        style = merged_df.style.format({"重み": "{:.3f}", "一致率": "{:.1%}"}, na_rep="-")
+        if '重み' in merged_df: style = style.bar(subset=["重み"], color='#FFA07A', vmin=0)
+        if '一致率' in merged_df: style = style.bar(subset=["一致率"], color='#90EE90', vmin=0, vmax=1)
+        st.dataframe(style, use_container_width=True)
     else:
-        st.warning("一致率データが見つかりませんでした。")
         st.table(df_w)
 else:
     st.warning("重みデータが見つかりませんでした。")
@@ -424,91 +393,58 @@ st.subheader("マッチング結果データ")
 st.markdown("""
 **凡例**
 - <span style="background-color:#28a745; padding: 2px 6px; border-radius: 4px;">緑色セル</span>: 学生と担当者の属性が一致している項目
-- <span style="background-color:#FF8A80; padding: 2px 6px; border-radius: 4px;">赤色セル</span>: 学生または担当者の属性が、相手方の全候補者リストに存在しないためマッチング不可能な項目
-- <span style="background-color:#FFD700; padding: 2px 6px; border-radius: 4px;">黄色セル</span>: マッチングしなかった項目（比較対象が赤色セル以外）
+- <span style="background-color:#FF8A80; padding: 2px 6px; border-radius: 4px;">赤色セル</span>: マッチング不可能な項目（相手データが存在しない、または候補にない）
+- <span style="background-color:#FFD700; padding: 2px 6px; border-radius: 4px;">黄色セル</span>: マッチングしなかった項目
 """, unsafe_allow_html=True)
 st.write("")
 
-partner_cols = [c for c in df.columns if c.startswith(f"{partner_type_selection}_")]
-student_cols = [c for c in df.columns if c.startswith("学生_")]
-other_cols = [c for c in df.columns if not (c.startswith(f"{partner_type_selection}_") or c.startswith("学生_"))]
-reordered_columns = partner_cols + student_cols + other_cols
-df_display = df[reordered_columns]
+if df_styler:
+    df_display = df_styler.data
+    columns_all_nan = [col for col in df_display.columns if df_display[col].isnull().all()]
+    columns_visible = [col for col in df_display.columns if col not in columns_all_nan]
+    st.dataframe(df_styler, column_order=columns_visible, use_container_width=True)
+    
+    excel_data = io.BytesIO()
+    df_styler.to_excel(excel_data, engine='openpyxl', index=False)
+    excel_data.seek(0)
 
-kana_col = None
-for c in partner_cols:
-    if "カナ" in c:
-        kana_col = c
-        break
-
-if kana_col is not None and kana_col in df_display.columns:
-    partner_id_col = f"{partner_type_selection}_社員番号"
-    if partner_id_col in df_display.columns:
-        assign_count = df[partner_id_col].value_counts()
-        id_to_kana = dict(zip(df_display[partner_id_col], df_display[kana_col]))
-        kana_to_count = {}
-        for emp_id, cnt in assign_count.items():
-            kana_name = id_to_kana.get(emp_id)
-            if kana_name is not None:
-                kana_to_count[kana_name] = cnt
-        df_display.insert(df_display.columns.get_loc(kana_col)+1, "担当学生数",
-                          df_display[kana_col].map(kana_to_count).fillna(0).astype(int))
-    df_display = df_display.sort_values(kana_col, ascending=True, kind="stable", na_position="last")
-
-columns_all_nan = [col for col in df_display.columns if df_display[col].isnull().all()]
-columns_visible = [col for col in df_display.columns if col not in columns_all_nan]
-
-styled_df = df_display.style.apply(
-    highlight_matches,
-    axis=1,
-    df_partners_source=df_source_partners,
-    df_students_source=df_source_students,
-    partner_type=partner_type_selection
-)
-st.dataframe(
-    styled_df,
-    column_order=columns_visible,
-    use_container_width=True
-)
-
-@st.cache_data
-def to_excel_with_style(_df_styled):
-    output = io.BytesIO()
-    _df_styled.to_excel(output, engine='openpyxl', index=False)
-    return output.getvalue()
-
-excel_data = to_excel_with_style(df_display)
-st.download_button(
-    label="📊 マッチング結果をExcelでダウンロード",
-    data=excel_data,
-    file_name=f"matching_results_{'recruiter' if partner_type_selection == 'リクルーター' else 'employee'}_styled.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    help="ハイライトされたセルを含むマッチング結果データをExcelファイルでダウンロードします。"
-)
+    st.download_button(
+        label="📊 表示中のマッチング結果をExcelでダウンロード",
+        data=excel_data,
+        file_name=f"matching_results_{'recruiter' if partner_type_selection == 'リクルーター' else 'employee'}_styled.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="現在表示されている色付けされたマッチング結果をExcelファイルでダウンロードします。"
+    )
+else:
+    st.warning("表示するマッチングデータがありません。")
 
 pdf_buffer = io.BytesIO()
 with PdfPages(pdf_buffer, metadata={'Title': f'Matching Report ({partner_type_selection})'}) as pdf:
     st.subheader(f"{partner_type_selection}ごとの担当学生数（負荷状況）")
-    num_students = len(df)
-    num_partners = len(df_source_partners)
-    min_assignments, max_assignments = config.calculate_assignment_range(
-        num_students, num_partners, const.ASSIGNMENT_DIFFERENCE
-    )
+    if partner_type_selection == "リクルーター":
+        df_source_partners, df_source_students = extract_source_partners_students(df, "リクルーター")
+    else:
+        df_source_partners, df_source_students = extract_source_partners_students(df, "現場代表社員")
+    num_students, num_partners = len(df_source_students), len(df_source_partners)
+
+    min_assignments, max_assignments = config.calculate_assignment_range(num_students, num_partners, const.ASSIGNMENT_DIFFERENCE)
     if min_assignments is not None and max_assignments is not None:
-        st.info(
-            f"**担当学生数の許容範囲:** "
-            f"各{partner_type_selection}に割り当てられる学生数は、"
-            f"**{min_assignments}人から{max_assignments}人** の範囲で最適化されています。"
-        )
+        st.info(f"**担当学生数の許容範囲:** 各{partner_type_selection}に割り当てられる学生数は、**{min_assignments}人から{max_assignments}人** の範囲で最適化されています。")
     else:
         st.warning("担当者数が0人のため、担当学生数の許容範囲は計算できません。")
+
     partner_id_col = f"{partner_type_selection}_社員番号"
     source_id_col = "社員番号"
-    if partner_id_col in df.columns and source_id_col in df_source_partners.columns and kana_col is not None and kana_col in df_display.columns:
-        partner_id_to_kana = df_display[[partner_id_col, kana_col]].drop_duplicates().set_index(partner_id_col)[kana_col].to_dict()
+    kana_col = [c for c in df.columns if c.startswith(partner_type_selection) and "カナ" in c]
+
+    if partner_id_col in df.columns and source_id_col in df_source_partners.columns and kana_col:
+        df_display_for_graph = styler_recruiters.data if partner_type_selection == "リクルーター" else styler_employees.data
+        kana_col_name = kana_col[0]
+        partner_id_to_kana = df_display_for_graph[[partner_id_col, kana_col_name]].drop_duplicates().set_index(partner_id_col)[kana_col_name].to_dict()
         all_partner_ids = df_source_partners[source_id_col].sort_values().unique()
         workload = df[partner_id_col].value_counts().reindex(all_partner_ids, fill_value=0)
         kana_labels = [partner_id_to_kana.get(pid, str(pid)) for pid in all_partner_ids]
+
         fig3, ax3 = plt.subplots(figsize=(max(10, len(all_partner_ids) * 0.4), 6))
         sns.barplot(x=kana_labels, y=workload.values, ax=ax3, palette="viridis")
         ax3.set_title(f"{partner_type_selection}ごとの担当学生数", fontsize=16)
@@ -522,20 +458,21 @@ with PdfPages(pdf_buffer, metadata={'Title': f'Matching Report ({partner_type_se
         plt.close(fig3)
     else:
         st.warning("担当者IDカラムまたはカナ氏名カラムが見つからないため、負荷状況グラフを表示できません。")
+
     st.divider()
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("属性ごとの一致度グラフ")
         fig, ax = plt.subplots(figsize=(8, 6))
         if ordered_match_info:
-            plot_data = ordered_match_info
-            sns.barplot(x=list(plot_data.keys()), y=list(plot_data.values()), ax=ax, color="#3498db")
+            plot_data = pd.Series(ordered_match_info).fillna(0)
+            sns.barplot(x=plot_data.index, y=plot_data.values, ax=ax, color="#3498db")
             ax.set_title(f"属性別 マッチング一致率 ({partner_type_selection})", fontsize=14)
             ax.set_xlabel("属性", fontsize=10)
             ax.set_ylabel("一致率", fontsize=10)
             ax.set_ylim(0, 1)
             plt.xticks(rotation=45, ha='right')
-            for i, v in enumerate(plot_data.values()):
+            for i, v in enumerate(plot_data.values):
                 ax.text(i, v + 0.02, f"{v:.1%}", ha='center', color='black')
             st.pyplot(fig)
             pdf.savefig(fig, bbox_inches="tight")
@@ -556,18 +493,16 @@ with PdfPages(pdf_buffer, metadata={'Title': f'Matching Report ({partner_type_se
             st.warning("「ペナルティ」列が見つかりません。")
         plt.close(fig2)
 
-# --- ▼ サイドバー下部で必ずダウンロードボタンを表示 ---
 st.sidebar.divider()
 st.sidebar.subheader("すべてのテーブルをExcelでダウンロード")
-usable_tables = [k for k, df in sidebar_tables.items() if df is not None and (not isinstance(df, pd.DataFrame) or not df.empty)]
-if len(usable_tables) == len(sidebar_tables):
-    excel_out = export_tables_to_excel(sidebar_tables)
+if all(table is not None for table in sidebar_tables.values()):
+    excel_out_all = export_tables_to_excel(sidebar_tables)
     st.sidebar.download_button(
         label="全てのテーブルをExcelで一括ダウンロード",
-        data=excel_out,
-        file_name="all_tables.xlsx",
+        data=excel_out_all,
+        file_name="all_tables_styled.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        help="学生・担当者原データ3種類と各担当者種別のマッチング結果を全て1つのExcelファイルでダウンロードします（シート分割、マッチ結果はセル色付き）。"
+        help="学生・担当者原データ3種類と各担当者種別のスタイル付きマッチング結果を全て1つのExcelファイルでダウンロードします。"
     )
 else:
-    st.sidebar.info("全データが揃っていません。全てのCSVファイルをご用意ください。")
+    st.sidebar.info("一部のデータファイルが見つからないため、一括ダウンロードはできません。全てのCSVファイルをご用意ください。")

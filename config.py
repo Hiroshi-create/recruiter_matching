@@ -1,5 +1,5 @@
-MIN_ASSIGNMENT_NUM = 2     # 担当可能最小人数
-MAX_ASSIGNMENT_NUM = 5     # 担当可能最大人数
+MIN_ASSIGNMENT_NUM = 5     # 担当可能最小人数
+MAX_ASSIGNMENT_NUM = 15     # 担当可能最大人数
 
 def calculate_assignment_range(num_students: int, num_partners: int, assignment_diff: int) -> tuple[int, int] | tuple[None, None]:
     """
